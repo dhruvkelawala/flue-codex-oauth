@@ -25,6 +25,7 @@ both too old. Every plan's commands assume:
 | 002  | `codexAuth()` factory: registration, middleware, env hygiene | P1 | M | 001 | DONE |
 | 003  | `flue-codex-login` device-code CLI | P2 | S | 001 | DONE |
 | 004  | User-facing docs + publish readiness | P2 | S | 001, 002, 003 | DONE |
+| 005  | CI-verified example app (`examples/basic`) | P2 | S | 002, 003 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale)
@@ -36,8 +37,14 @@ REJECTED (with one-line rationale)
 - 002 and 003 are independent of each other and may run in parallel (they
   touch disjoint files; both append to `src/index.ts` — if run truly
   concurrently, expect a trivial merge there).
-- 004 documents the API that 002/003 create, so it must run last; its
+- 004 documents the API that 002/003 create, so it runs after them; its
   Quickstart example must be verified against the real `src/index.ts`.
+- 005 needs 002/003 (it exercises the public API and mentions the login CLI)
+  and may run before or after 004. If 004 has already landed, 005 amends the
+  root README (one pointer line) and `prepublishOnly` that 004 created; if
+  not, 004's executor will find `example:check` already in `prepublishOnly`
+  and must keep it. The example's `src/app.ts` and the README Quickstart must
+  stay textually in sync whichever lands second.
 
 ## Cross-cutting invariants (every executor must honor these)
 
@@ -71,3 +78,9 @@ REJECTED (with one-line rationale)
   kinds are sandbox/channel/database/tooling with a fixed known-blueprint
   list; the URL form (`flue add tooling <repo-url>`) is the supported path
   and is documented in Plan 004.
+- **A scaffolding command** (`create-flue-codex-app` / `init` subcommand):
+  rejected — Flue owns project creation (`flue init`) and integration
+  (`flue add`); a per-package scaffolder would compete with the framework and
+  rot with every beta. The framework-native story is `flue init` →
+  `pnpm add flue-codex-oauth` → `npx flue-codex-login`, and Plan 005's
+  verified example covers the "show me a working app" need.
