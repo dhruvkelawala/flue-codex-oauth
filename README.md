@@ -38,6 +38,8 @@ Point your agent at Codex with a model specifier such as:
 model: "openai-codex/gpt-5.5"
 ```
 
+See [examples/basic](examples/basic) for a complete runnable app.
+
 ## Overview
 
 `flue-codex-oauth` owns the credential lifecycle for the `openai-codex` provider:
