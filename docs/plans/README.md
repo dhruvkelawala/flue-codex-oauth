@@ -21,7 +21,7 @@ both too old. Every plan's commands assume:
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001  | Build/test baseline + core credential store | P1 | M | — | TODO |
+| 001  | Build/test baseline + core credential store | P1 | M | — | DONE |
 | 002  | `codexAuth()` factory: registration, middleware, env hygiene | P1 | M | 001 | TODO |
 | 003  | `flue-codex-login` device-code CLI | P2 | S | 001 | TODO |
 | 004  | User-facing docs + publish readiness | P2 | S | 001, 002, 003 | TODO |
