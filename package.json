@@ -1,0 +1,43 @@
+{
+  "name": "flue-codex-oauth",
+  "version": "0.0.0",
+  "description": "Codex subscription OAuth for Flue agents: file-based credential store, automatic token refresh, and one-line provider registration.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "flue-codex-login": "./dist/bin/login.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@flue/runtime": ">=1.0.0-beta.9 <2",
+    "hono": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "hono": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.3"
+  },
+  "devDependencies": {
+    "@flue/runtime": "1.0.0-beta.9",
+    "hono": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
