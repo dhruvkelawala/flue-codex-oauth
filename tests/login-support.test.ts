@@ -29,6 +29,12 @@ describe("login support", () => {
     expect(isAbsolute(plan.authPath)).toBe(true);
   });
 
+  it("allows the default home auth path when launched from the home directory", () => {
+    const plan = expectPlan(planLogin([], {}, homedir(), neverExists));
+
+    expect(plan.authPath).toBe(join(homedir(), ".flue/openai-codex.json"));
+  });
+
   it("rejects relative auth paths", () => {
     expect(expectError(planLogin(["--auth-path", "./x"], {}, fakeCwd(), neverExists))).toContain(
       "absolute",

@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { expandHome } from "./credential-store.js";
 
@@ -34,7 +35,7 @@ export function planLogin(
   }
 
   const authPath = resolve(expandedAuthPath);
-  if (isPathInside(cwd, authPath)) {
+  if (!isHomeDirectory(cwd) && isPathInside(cwd, authPath)) {
     return {
       error: `Refusing to write Codex auth inside the project directory: ${authPath}`,
     };
@@ -92,6 +93,10 @@ function isPathInside(parent: string, child: string): boolean {
     relativePath === "" ||
     (!!relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath))
   );
+}
+
+function isHomeDirectory(path: string): boolean {
+  return resolve(path) === resolve(homedir());
 }
 
 function clean(value: string | undefined): string | undefined {
