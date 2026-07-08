@@ -58,17 +58,23 @@ jobs:
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Check package version matches release tag
+      - name: Set package version from release tag
         env:
           RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
         run: |
-          package_version="$(node -p "require('./package.json').version")"
           tag_version="${RELEASE_TAG#v}"
+          export RELEASE_VERSION="$tag_version"
 
-          if [ "$package_version" != "$tag_version" ]; then
-            echo "::error::Release tag $RELEASE_TAG must match package.json version $package_version"
-            exit 1
-          fi
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+
+            const packageJsonPath = "package.json";
+            const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+            packageJson.version = process.env.RELEASE_VERSION;
+            writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+          '
+
+          echo "Release package version: $tag_version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

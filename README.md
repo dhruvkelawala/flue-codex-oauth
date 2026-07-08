@@ -151,11 +151,10 @@ When integrating into a host app, also check these runtime cases:
 
 The `Release` GitHub Actions workflow creates the dogfood package artifact:
 
-1. Set `package.json` to the version you want to release.
-2. Push a matching tag such as `v0.0.0`, or run the workflow manually with that tag.
-3. The workflow checks that the tag matches `package.json` before packing.
-4. The workflow runs `pnpm prepublishOnly`.
-5. The workflow runs `pnpm pack` and uploads the generated `.tgz` to the GitHub Release.
+1. Push a tag such as `v0.0.1`, or run the workflow manually with that tag.
+2. The workflow sets the package version from the tag before installing, packing, or publishing.
+3. The workflow runs `pnpm prepublishOnly`.
+4. The workflow runs `pnpm pack` and uploads the generated `.tgz` to the GitHub Release.
 
 The workflow also contains the npm publish step for later. It is skipped by
 default and only runs from manual dispatch when `publish_npm` is enabled and the
