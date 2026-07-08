@@ -10,6 +10,21 @@ Install the package in a Flue app that already depends on `@flue/runtime`:
 pnpm add flue-codex-oauth
 ```
 
+Until the package is published to npm, download the package tarball from the
+latest [GitHub Release](https://github.com/dhruvkelawala/flue-codex-oauth/releases)
+and install it from your app:
+
+```bash
+mkdir -p vendor
+cp ~/Downloads/flue-codex-oauth-<version>.tgz vendor/
+pnpm add ./vendor/flue-codex-oauth-<version>.tgz
+```
+
+The release tarball contains the built `dist/` files required by this package's
+`exports` and `flue-codex-login` bin entries. Host apps must use `@flue/runtime
+>=1.0.0-beta.9 <2`; upgrade the host Flue runtime first if your app is on an
+older beta.
+
 Create the local Codex auth file once:
 
 ```bash
@@ -88,6 +103,63 @@ Pass these to `codexAuth(options)`.
 | Node `>=20` | Required runtime for the package and CLI. |
 | ChatGPT/Codex subscription | Required upstream account capability for OpenAI Codex OAuth. |
 | `hono` `>=4` | Optional peer used by typical Flue HTTP apps; middleware is structurally typed and does not import `hono`. |
+
+## Pre-Publish Dogfood
+
+Before the npm package is published, use the `.tgz` package artifact attached to
+a GitHub Release. It is produced by the release workflow after running the full
+publish gate.
+
+```bash
+mkdir -p vendor
+cp ~/Downloads/flue-codex-oauth-<version>.tgz vendor/
+pnpm add ./vendor/flue-codex-oauth-<version>.tgz
+```
+
+If you need a local artifact before a release exists, build and vendor a tarball:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm pack
+```
+
+Then depend on the packed artifact from the host app:
+
+```json
+{
+  "dependencies": {
+    "flue-codex-oauth": "file:vendor/flue-codex-oauth-<version>.tgz"
+  }
+}
+```
+
+For a quick smoke test after either install path:
+
+```bash
+pnpm exec flue-codex-login --help
+node -e "import('flue-codex-oauth').then(m => console.log(Object.keys(m)))"
+```
+
+When integrating into a host app, also check these runtime cases:
+
+- The app can start with the integration disabled or no auth file present.
+- A valid auth file registers the `openai-codex` provider.
+- Middleware refresh does not log token material.
+
+## Release
+
+The `Release` GitHub Actions workflow creates the dogfood package artifact:
+
+1. Set `package.json` to the version you want to release.
+2. Push a matching tag such as `v0.0.0`, or run the workflow manually with that tag.
+3. The workflow checks that the tag matches `package.json` before packing.
+4. The workflow runs `pnpm prepublishOnly`.
+5. The workflow runs `pnpm pack` and uploads the generated `.tgz` to the GitHub Release.
+
+The workflow also contains the npm publish step for later. It is skipped by
+default and only runs from manual dispatch when `publish_npm` is enabled and the
+repository has an `NPM_TOKEN` secret.
 
 ## Typical use
 

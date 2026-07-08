@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update, for example v0.0.0"
+        required: true
+        type: string
+      publish_npm:
+        description: "Publish to npm after the GitHub Release. Requires NPM_TOKEN."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Build package and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Resolve release tag
+        id: release-tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if ! echo "$tag" | grep -Eq '^v[0-9]+[.][0-9]+[.][0-9]+([.-][A-Za-z0-9.-]+)?$'; then
+            echo "::error::Release tag must look like v0.0.0 or v0.0.0-beta.1"
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check package version matches release tag
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "::error::Release tag $RELEASE_TAG must match package.json version $package_version"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release gate
+        run: pnpm prepublishOnly
+
+      - name: Pack release artifact
+        id: pack
+        run: |
+          mkdir -p artifacts
+          pnpm pack --pack-destination artifacts
+
+          tarball="$(find artifacts -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$tarball" ]; then
+            echo "::error::pnpm pack did not produce a .tgz artifact"
+            exit 1
+          fi
+
+          tar -tf "$tarball" | sort | tee artifacts/package-contents.txt
+          grep -qx "package/dist/index.js" artifacts/package-contents.txt
+          grep -qx "package/dist/bin/login.js" artifacts/package-contents.txt
+
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure manual release tag exists
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          tag="$RELEASE_TAG"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          tag="$RELEASE_TAG"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/*.tgz artifacts/package-contents.txt --clobber
+          else
+            gh release create "$tag" artifacts/*.tgz artifacts/package-contents.txt \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::Set the NPM_TOKEN repository secret before enabling publish_npm."
+            exit 1
+          fi
+
+          pnpm publish --access public --no-git-checks
