@@ -136,12 +136,15 @@ describe("codexAuth", () => {
     const authPath = authFilePath();
     writeAuthFile(authPath, Date.now() + 600_000);
 
-    await expect(
-      codexAuth({
-        authPath,
-        registerProvider: "not-a-function" as never,
-      }).configure(),
-    ).rejects.toThrow(
+    const auth = codexAuth({
+      authPath,
+      registerProvider: "not-a-function" as never,
+    });
+
+    expect(auth.checks()).toContainEqual(
+      expect.objectContaining({ name: "flue-runtime-integration", ok: false }),
+    );
+    await expect(auth.configure()).rejects.toThrow(
       "@flue/runtime registerProvider is unavailable — is @flue/runtime installed as a peer?",
     );
   });

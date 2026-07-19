@@ -85,18 +85,19 @@ async function configureOnce(options: CodexAuthOptions): Promise<CodexAuthStatus
 
   const { apiKey, status } = await resolveApiKey(storeOptions(options));
   const register = options.registerProvider ?? flueRegisterProvider;
-  if (typeof register !== "function") {
-    throw new Error(
-      "@flue/runtime registerProvider is unavailable — is @flue/runtime installed as a peer?",
-    );
-  }
-
   register(CODEX_PROVIDER_ID, { apiKey });
   return status;
 }
 
 function checksForOptions(options: CodexAuthOptions): AuthCheck[] {
   const checks = validateAuthPath(storeOptions(options));
+
+  checks.push({
+    name: "flue-runtime-integration",
+    ok: typeof (options.registerProvider ?? flueRegisterProvider) === "function",
+    severity: "error",
+    message: "@flue/runtime registerProvider is unavailable — is @flue/runtime installed as a peer?",
+  });
 
   if (options.envHygiene !== false) {
     checks.push(...checkEnvHygiene(options.env ?? process.env, options.rejectedEnvNames));

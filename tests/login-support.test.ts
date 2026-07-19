@@ -1,7 +1,13 @@
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_AUTH_PATH, planLogin, usage, type LoginPlan } from "../src/login-support.ts";
+import {
+  DEFAULT_AUTH_PATH,
+  planAuthPath,
+  planLogin,
+  usage,
+  type LoginPlan,
+} from "../src/login-support.ts";
 
 describe("login support", () => {
   it("resolves --auth-path before env before the default path", () => {
@@ -71,8 +77,17 @@ describe("login support", () => {
 
     expect(text).toContain("--auth-path");
     expect(text).toContain("--force");
+    expect(text).toContain("--doctor");
     expect(text).toContain("FLUE_CODEX_AUTH_PATH");
     expect(text).toContain(DEFAULT_AUTH_PATH);
+  });
+
+  it("resolves an existing auth path for doctor without requiring --force", () => {
+    const authPath = outsidePath("doctor.json");
+
+    expect(planAuthPath(["--doctor", "--auth-path", authPath], {}, fakeCwd())).toEqual({
+      authPath,
+    });
   });
 });
 

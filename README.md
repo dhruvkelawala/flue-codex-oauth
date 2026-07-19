@@ -2,6 +2,21 @@
 
 > OpenAI Codex subscription OAuth for Flue apps, backed by a local credential file and automatic refresh.
 
+## Install before npm publish
+
+Until the package is published to npm, install the built package directly from
+the public `v0.0.1` release and create the local Codex auth file:
+
+```bash
+pnpm add https://github.com/dhruvkelawala/flue-codex-oauth/releases/download/v0.0.1/flue-codex-oauth-0.0.1.tgz
+pnpm exec flue-codex-login
+pnpm exec flue-codex-login --doctor
+```
+
+The release tarball contains the built `dist/` files required by this package's
+exports and CLI. Do not install from the git URL: the repository does not commit
+`dist/` or define a `prepare` script.
+
 ## Quickstart
 
 Install the package in a Flue app that already depends on `@flue/runtime`:
@@ -10,25 +25,14 @@ Install the package in a Flue app that already depends on `@flue/runtime`:
 pnpm add flue-codex-oauth
 ```
 
-Until the package is published to npm, download the package tarball from the
-latest [GitHub Release](https://github.com/dhruvkelawala/flue-codex-oauth/releases)
-and install it from your app:
-
-```bash
-mkdir -p vendor
-cp ~/Downloads/flue-codex-oauth-<version>.tgz vendor/
-pnpm add ./vendor/flue-codex-oauth-<version>.tgz
-```
-
-The release tarball contains the built `dist/` files required by this package's
-`exports` and `flue-codex-login` bin entries. Host apps must use `@flue/runtime
->=1.0.0-beta.9 <2`; upgrade the host Flue runtime first if your app is on an
-older beta.
+Before npm publish, use the release URL in the preceding section instead. Host
+apps must use `@flue/runtime >=1.0.0-beta.9 <2`; upgrade the host Flue runtime
+first if your app is on an older beta.
 
 Create the local Codex auth file once:
 
 ```bash
-npx flue-codex-login
+pnpm exec flue-codex-login
 ```
 
 Wire the provider in `src/app.ts`:
@@ -58,6 +62,17 @@ model: "openai-codex/gpt-5.5"
 ```
 
 See [examples/basic](examples/basic) for a complete runnable app.
+
+Validate the installed package, auth file, permissions, environment hygiene,
+token readability/refresh, and host runtime integration without printing token
+material:
+
+```bash
+pnpm exec flue-codex-login --doctor
+```
+
+The alias `--check` performs the same validation. A ready integration exits
+with status 0; any failed check exits with status 1.
 
 ## Overview
 
@@ -107,14 +122,9 @@ Pass these to `codexAuth(options)`.
 ## Pre-Publish Dogfood
 
 Before the npm package is published, use the `.tgz` package artifact attached to
-a GitHub Release. It is produced by the release workflow after running the full
-publish gate.
-
-```bash
-mkdir -p vendor
-cp ~/Downloads/flue-codex-oauth-<version>.tgz vendor/
-pnpm add ./vendor/flue-codex-oauth-<version>.tgz
-```
+the public GitHub Release. It is produced by the release workflow after running
+the full publish gate. Use the exact install and doctor commands in
+[Install before npm publish](#install-before-npm-publish).
 
 If you need a local artifact before a release exists, build and vendor a tarball:
 
@@ -138,7 +148,7 @@ For a quick smoke test after either install path:
 
 ```bash
 pnpm exec flue-codex-login --help
-node -e "import('flue-codex-oauth').then(m => console.log(Object.keys(m)))"
+pnpm exec flue-codex-login --doctor
 ```
 
 When integrating into a host app, also check these runtime cases:
@@ -162,6 +172,11 @@ repository has an `NPM_TOKEN` secret.
 
 ## Typical use
 
+### Required auth
+
+Use this complete `src/app.ts` when Codex auth is required. Startup fails if
+the auth file is missing, unsafe, malformed, or cannot be refreshed.
+
 ```ts
 // src/app.ts
 import { codexAuth } from "flue-codex-oauth";
@@ -184,6 +199,40 @@ app.route("/", flue());
 export default app;
 ```
 
+### Optional dogfood auth
+
+Use this complete `src/app.ts` when the rest of the app should start without
+Codex auth. The `openai-codex` provider and refresh middleware are only enabled
+when the auth file exists.
+
+```ts
+// src/app.ts
+import { existsSync } from "node:fs";
+import { flue } from "@flue/runtime/routing";
+import { codexAuth, expandHome } from "flue-codex-oauth";
+import { Hono } from "hono";
+
+const app = new Hono();
+const authPath = expandHome(
+  process.env.FLUE_CODEX_AUTH_PATH ?? "~/.flue/openai-codex.json",
+);
+const authRequested = process.env.FLUE_CODEX_AUTH_ENABLED === "1";
+const codex = existsSync(authPath) || authRequested ? codexAuth({ authPath }) : undefined;
+
+if (codex) {
+  await codex.configure();
+  app.use("*", codex.middleware());
+}
+
+app.route("/", flue());
+
+export default app;
+```
+
+`FLUE_CODEX_AUTH_ENABLED=1` is a host-app toggle: it makes missing or invalid
+auth fail startup for an environment that explicitly expects Codex. Without the
+toggle, a missing auth file leaves the rest of the app available.
+
 Create or replace the auth file:
 
 ```bash
@@ -198,6 +247,15 @@ flue add tooling <repo-url>
 ```
 
 The agent can use this README as the integration starting point.
+
+## Agent notes
+
+- Before npm publish, install the public release tarball URL shown at the top
+  of this README; do not use the git URL because it has no built `dist/` files.
+- Keep the auth file outside the repository and never store Codex OAuth tokens
+  in environment variables.
+- Use model specifiers such as `openai-codex/gpt-5.5`.
+- Run `pnpm exec flue-codex-login --doctor` after wiring the integration.
 
 ## Security
 
