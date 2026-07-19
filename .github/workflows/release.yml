@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       publish_npm:
-        description: "Publish to npm after the GitHub Release. Requires a writable granular NPM_TOKEN with bypass 2FA."
+        description: "Publish to npm after the GitHub Release. Uses trusted publishing, with NPM_TOKEN as the first-publish fallback."
         required: false
         default: false
         type: boolean
@@ -27,30 +27,31 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
 
       - name: Enable pnpm
         run: corepack enable
 
-      - name: Verify npm authentication
+      - name: Check npm authentication mode
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_npm }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::Set the NPM_TOKEN repository secret before enabling publish_npm."
-            exit 1
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            npm whoami --registry https://registry.npmjs.org
+            echo "A granular npm token is available as a bootstrap/fallback credential."
+          else
+            echo "No npm token is configured; publish requires npm trusted publishing for this workflow."
           fi
-
-          npm whoami --registry https://registry.npmjs.org
 
       - name: Resolve release tag
         id: release-tag
