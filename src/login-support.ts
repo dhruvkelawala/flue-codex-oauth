@@ -23,6 +23,26 @@ export function planLogin(
   cwd: string,
   fileExists: (p: string) => boolean,
 ): LoginPlan | LoginPlanError {
+  const authPathPlan = planAuthPath(argv, env, cwd);
+  if ("error" in authPathPlan) return authPathPlan;
+  const { authPath } = authPathPlan;
+
+  const force = argv.includes("--force");
+  if (fileExists(authPath) && !force) {
+    return {
+      error: `Codex auth file already exists: ${authPath}. Re-run with --force to overwrite.`,
+    };
+  }
+
+  return { authPath, force };
+}
+
+/** Resolve and validate the shared auth path for login and doctor commands. */
+export function planAuthPath(
+  argv: string[],
+  env: Record<string, string | undefined>,
+  cwd: string,
+): { authPath: string } | LoginPlanError {
   const parsedAuthPath = optionValue(argv, "--auth-path");
   if ("error" in parsedAuthPath) return parsedAuthPath;
 
@@ -37,24 +57,19 @@ export function planLogin(
   const authPath = resolve(expandedAuthPath);
   if (!isHomeDirectory(cwd) && isPathInside(cwd, authPath)) {
     return {
-      error: `Refusing to write Codex auth inside the project directory: ${authPath}`,
+      error: `Refusing to use Codex auth inside the project directory: ${authPath}`,
     };
   }
 
-  const force = argv.includes("--force");
-  if (fileExists(authPath) && !force) {
-    return {
-      error: `Codex auth file already exists: ${authPath}. Re-run with --force to overwrite.`,
-    };
-  }
-
-  return { authPath, force };
+  return { authPath };
 }
 
 export function usage(): string {
   return `Usage: flue-codex-login [--auth-path /path/to/openai-codex.json] [--force]
+       flue-codex-login --doctor [--auth-path /path/to/openai-codex.json]
 
 Runs the OpenAI Codex device-code flow and writes a local auth file.
+Use --doctor (or --check) to validate an existing integration without printing tokens.
 
 Auth path resolution order:
   1. --auth-path <path>
@@ -63,6 +78,7 @@ Auth path resolution order:
 
 Options:
   --auth-path <path>  Absolute auth file path. A leading ~/ is expanded.
+  --doctor, --check   Validate auth, refresh, environment, and runtime integration.
   --force             Overwrite an existing auth file.
   --help, -h          Show this help.
 `;

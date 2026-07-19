@@ -21,7 +21,7 @@
   },
   "types": "./dist/index.d.ts",
   "bin": {
-    "flue-codex-login": "./dist/bin/login.js"
+    "flue-codex-login": "dist/bin/login.js"
   },
   "files": [
     "dist"
