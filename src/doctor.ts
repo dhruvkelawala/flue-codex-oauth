@@ -1,4 +1,9 @@
-import { codexAuth, type CodexAuthOptions } from "./codex-auth.js";
+import {
+  codexAuthStatus,
+  codexProviderChecks,
+  preflight,
+  type CodexProviderOptions,
+} from "./codex-provider.js";
 import type { AuthCheck, CodexAuthStatus } from "./credential-store.js";
 
 export interface CodexDoctorReport {
@@ -8,12 +13,11 @@ export interface CodexDoctorReport {
 
 /** Validate the installed integration while keeping all credential material private. */
 export async function runCodexDoctor(
-  options: CodexAuthOptions = {},
+  options: CodexProviderOptions = {},
 ): Promise<CodexDoctorReport> {
-  const auth = codexAuth(options);
-  const status = auth.status();
+  const status = codexAuthStatus(options);
   const checks: AuthCheck[] = [
-    ...auth.checks(),
+    ...codexProviderChecks(options),
     {
       name: "codex-auth-file-exists",
       ok: status.configured,
@@ -24,21 +28,28 @@ export async function runCodexDoctor(
 
   if (!hasErrors(checks)) {
     try {
-      const configuredStatus = await auth.configure();
+      const resolved = await preflight(options);
       checks.push(
         passed(
           "codex-auth-usable",
-          "Credentials are readable and refreshable, and the provider registered successfully.",
+          "Credentials are readable and refreshable through the provider factory.",
         ),
       );
-      return { checks, status: configuredStatus };
+      return {
+        checks,
+        status: {
+          configured: true,
+          authPath: resolved.authPath,
+          ...(resolved.expiresAt ? { expiresAt: resolved.expiresAt } : {}),
+          ...(resolved.accountId ? { accountId: resolved.accountId } : {}),
+        },
+      };
     } catch {
       checks.push({
         name: "codex-auth-usable",
         ok: false,
         severity: "error",
-        message:
-          "Credentials could not be read, refreshed when needed, or registered with the host runtime.",
+        message: "Credentials could not be read or refreshed when needed.",
       });
     }
   }
@@ -50,9 +61,7 @@ export function formatCodexDoctorReport(report: CodexDoctorReport): string {
   const lines = ["Flue Codex OAuth doctor", `Auth file: ${report.status.authPath || "<unset>"}`];
 
   for (const check of report.checks) {
-    lines.push(
-      check.ok ? `PASS ${check.name}` : `FAIL ${check.name}: ${check.message}`,
-    );
+    lines.push(check.ok ? `PASS ${check.name}` : `FAIL ${check.name}: ${check.message}`);
   }
 
   if (report.status.expiresAt) lines.push(`Token expiry: ${report.status.expiresAt}`);

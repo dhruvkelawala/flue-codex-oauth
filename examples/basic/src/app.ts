@@ -1,15 +1,12 @@
-import { codexAuth } from "flue-codex-oauth";
-import { flue } from "@flue/runtime/routing";
+import { setProvider } from "@flue/runtime";
+import { createAgentRouter } from "@flue/runtime/routing";
 import { Hono } from "hono";
+import { codexProvider } from "flue-codex-oauth";
+import { Assistant } from "./agents/assistant.ts";
 
-const codex = codexAuth(); // defaults: ~/.flue/openai-codex.json
-
-await codex.configure(); // startup: refresh if stale, registerProvider("openai-codex", ...)
+setProvider(codexProvider());
 
 const app = new Hono();
-
-app.use("*", codex.middleware()); // keep the registered token fresh per request
-
-app.route("/", flue());
+app.route("/agents/assistant", createAgentRouter(Assistant));
 
 export default app;

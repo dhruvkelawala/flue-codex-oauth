@@ -1,289 +1,124 @@
 # flue-codex-oauth
 
-> OpenAI Codex subscription OAuth for Flue apps, backed by a local credential file and automatic refresh.
+> OpenAI Codex subscription OAuth for Flue 2, backed by an owner-only local credential file with request-time refresh.
 
-## Install before npm publish
+## Requirements
 
-Until the package is published to npm, install the built package directly from
-the public `v0.0.1` release and create the local Codex auth file:
+- Flue `^2.0.0`
+- Node `>=22.19.0`
+- A ChatGPT/Codex subscription
 
-```bash
-pnpm add https://github.com/dhruvkelawala/flue-codex-oauth/releases/download/v0.0.1/flue-codex-oauth-0.0.1.tgz
-pnpm exec flue-codex-login
-pnpm exec flue-codex-login --doctor
-```
+This major is for Flue 2 only. The `0.x` releases remain available for Flue beta hosts.
 
-The release tarball contains the built `dist/` files required by this package's
-exports and CLI. Do not install from the git URL: the repository does not commit
-`dist/` or define a `prepare` script.
-
-## Quickstart
-
-Install the package in a Flue app that already depends on `@flue/runtime`:
+## Install
 
 ```bash
 pnpm add flue-codex-oauth
-```
-
-Before npm publish, use the release URL in the preceding section instead. Host
-apps must use `@flue/runtime >=1.0.0-beta.9 <2`; upgrade the host Flue runtime
-first if your app is on an older beta.
-
-Create the local Codex auth file once:
-
-```bash
 pnpm exec flue-codex-login
 ```
 
-Wire the provider in `src/app.ts`:
+The login command runs OpenAI's device-code flow and writes
+`~/.flue/openai-codex.json` by default.
+
+## Register the provider
+
+Create the provider and hand it to Flue 2's `setProvider()` before an agent runs:
 
 ```ts
-import { codexAuth } from "flue-codex-oauth";
-import { flue } from "@flue/runtime/routing";
-import { Hono } from "hono";
+import { setProvider } from "@flue/runtime";
+import { codexProvider } from "flue-codex-oauth";
 
-const codex = codexAuth(); // defaults: ~/.flue/openai-codex.json
-
-await codex.configure(); // startup: refresh if stale, registerProvider("openai-codex", ...)
-
-const app = new Hono();
-
-app.use("*", codex.middleware()); // keep the registered token fresh per request
-
-app.route("/", flue());
-
-export default app;
+setProvider(
+  codexProvider({
+    authPath: "~/.flue/openai-codex.json",
+    forbiddenPaths: [repoRoot, runtimeWorkdir, ...sqliteStorePaths],
+    refreshSkewMs: 300_000,
+  }),
+);
 ```
 
-Point your agent at Codex with a model specifier such as:
+Then select a Codex model:
 
 ```ts
 model: "openai-codex/gpt-5.5"
 ```
 
-See [examples/basic](examples/basic) for a complete runnable app.
+`codexProvider()` returns a Pi `Provider`. Its auth resolver reads the credential
+file for every model request, refreshes credentials near expiry, atomically
+rewrites the file, and returns only the access token to Pi. No HTTP middleware
+is required, so dispatch-only agents receive the same refresh behavior.
 
-Validate the installed package, auth file, permissions, environment hygiene,
-token readability/refresh, and host runtime integration without printing token
-material:
+Flue's `run` command loads an agent module without loading `app.ts`. If that
+agent must also run through `flue run`, register the provider in the agent
+module instead.
 
-```bash
-pnpm exec flue-codex-login --doctor
+See [`examples/basic`](examples/basic) for a Flue 2 app.
+
+## Startup preflight
+
+Required-auth hosts can fail startup closed before serving traffic:
+
+```ts
+import { preflight } from "flue-codex-oauth";
+
+const status = await preflight({
+  authPath: "~/.flue/openai-codex.json",
+  forbiddenPaths: [repoRoot, runtimeWorkdir, ...sqliteStorePaths],
+});
 ```
 
-The alias `--check` performs the same validation. A ready integration exits
-with status 0; any failed check exits with status 1.
+The result contains safe metadata only: `authPath`, `expiresAt`, and optional
+`accountId`. It never includes access or refresh tokens.
 
-## Overview
+## Options
 
-`flue-codex-oauth` owns the credential lifecycle for the `openai-codex` provider:
-
-- Runs a one-time device-code login through `flue-codex-login`.
-- Stores OAuth credentials in one local JSON file.
-- Refreshes stale credentials before registration.
-- Calls the host app's `@flue/runtime` `registerProvider("openai-codex", { apiKey })`.
-- Provides Hono-compatible middleware that reconfigures per request so long-running apps keep a fresh token.
-
-It does not own model selection, app configuration loading, or a richer OAuth consent UI beyond the device-code prompt. Windows permission enforcement is intentionally limited: POSIX mode checks are skipped on Windows, matching the runtime credential-store behavior.
-
-## Configure
-
-### `CodexAuthOptions`
-
-Pass these to `codexAuth(options)`.
+`codexProvider(options)` and `preflight(options)` accept:
 
 | Option | Default | Purpose |
-|--------|---------|---------|
-| `authPath` | `~/.flue/openai-codex.json` | Auth JSON file to read, refresh, and register from. `~/` is expanded. |
-| `forbiddenPaths` | `[process.cwd()]` | Paths the auth file must not be equal to or inside. Use this to keep credentials out of repos, workdirs, and stores. |
-| `refreshSkewMs` | `300_000` | Refresh this many milliseconds before credential expiry. |
-| `rejectedEnvNames` | `[]` | Extra env var names to reject alongside the built-in Codex OAuth credential names. |
-| `envHygiene` | `true` | Set to `false` to skip env hygiene checks. |
-| `env` | `process.env` | Env map used by checks. Mainly useful in tests or custom bootstrapping. |
-| `now` | `Date.now` | Clock used by refresh decisions. Mainly useful in tests. |
-| `refreshToken` | `refreshOpenAICodexToken` | Token refresher. Mainly useful in tests. |
-| `registerProvider` | host `@flue/runtime` `registerProvider` | Provider registration function. Mainly useful in tests. |
+| --- | --- | --- |
+| `authPath` | `~/.flue/openai-codex.json` | Auth JSON file to read, refresh, and atomically rewrite. `~/` is expanded. |
+| `forbiddenPaths` | `[process.cwd()]` | Paths the auth file must not equal or live inside. SQLite `-wal`/`-shm` sidecars are also rejected. |
+| `refreshSkewMs` | `300_000` | Refresh this many milliseconds before expiry. |
+| `rejectedEnvNames` | `[]` | Additional environment names that must not contain credential material. |
+| `envHygiene` | `true` | Set to `false` to skip environment checks. |
+| `env` | `process.env` | Environment map used by hygiene checks. |
 
-### Login CLI Environment
+`FLUE_CODEX_AUTH_PATH` is used by the login and doctor CLI when `--auth-path`
+is not supplied. It is a path, not credential material.
 
-| Name | Default | Purpose |
-|------|---------|---------|
-| `FLUE_CODEX_AUTH_PATH` | `~/.flue/openai-codex.json` | Auth file path used by `flue-codex-login` when `--auth-path` is not passed. This is a path, not credential material. |
+## Doctor
 
-### Requirements
-
-| Requirement | Purpose |
-|-------------|---------|
-| `@flue/runtime` `>=1.0.0-beta.9 <2` | Peer dependency; this package must register with the host app's runtime provider registry. |
-| Node `>=20` | Required runtime for the package and CLI. |
-| ChatGPT/Codex subscription | Required upstream account capability for OpenAI Codex OAuth. |
-| `hono` `>=4` | Optional peer used by typical Flue HTTP apps; middleware is structurally typed and does not import `hono`. |
-
-## Pre-Publish Dogfood
-
-Before the npm package is published, use the `.tgz` package artifact attached to
-the public GitHub Release. It is produced by the release workflow after running
-the full publish gate. Use the exact install and doctor commands in
-[Install before npm publish](#install-before-npm-publish).
-
-If you need a local artifact before a release exists, build and vendor a tarball:
+Validate the package, Flue 2 integration, path safety, permissions,
+environment hygiene, and credential refresh without printing tokens:
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm build
-pnpm pack
-```
-
-Then depend on the packed artifact from the host app:
-
-```json
-{
-  "dependencies": {
-    "flue-codex-oauth": "file:vendor/flue-codex-oauth-<version>.tgz"
-  }
-}
-```
-
-For a quick smoke test after either install path:
-
-```bash
-pnpm exec flue-codex-login --help
 pnpm exec flue-codex-login --doctor
+# alias
+pnpm exec flue-codex-login --check
 ```
 
-When integrating into a host app, also check these runtime cases:
-
-- The app can start with the integration disabled or no auth file present.
-- A valid auth file registers the `openai-codex` provider.
-- Middleware refresh does not log token material.
-
-## Release
-
-The `Release` GitHub Actions workflow creates the dogfood package artifact:
-
-1. Push a tag such as `v0.0.1`, or run the workflow manually with that tag.
-2. The workflow sets the package version from the tag before installing, packing, or publishing.
-3. The workflow runs `pnpm prepublishOnly`.
-4. The workflow runs `pnpm pack` and uploads the generated `.tgz` to the GitHub Release.
-
-The workflow also contains the npm publish step for later. It is skipped by
-default and only runs from manual dispatch when `publish_npm` is enabled and the
-repository has an `NPM_TOKEN` secret.
-
-## Typical use
-
-### Required auth
-
-Use this complete `src/app.ts` when Codex auth is required. Startup fails if
-the auth file is missing, unsafe, malformed, or cannot be refreshed.
-
-```ts
-// src/app.ts
-import { codexAuth } from "flue-codex-oauth";
-import { flue } from "@flue/runtime/routing";
-import { Hono } from "hono";
-
-const codex = codexAuth({
-  authPath: process.env.FLUE_CODEX_AUTH_PATH,
-  forbiddenPaths: [process.cwd()],
-});
-
-await codex.configure();
-
-const app = new Hono();
-
-app.use("*", codex.middleware());
-
-app.route("/", flue());
-
-export default app;
-```
-
-### Optional dogfood auth
-
-Use this complete `src/app.ts` when the rest of the app should start without
-Codex auth. The `openai-codex` provider and refresh middleware are only enabled
-when the auth file exists.
-
-```ts
-// src/app.ts
-import { existsSync } from "node:fs";
-import { flue } from "@flue/runtime/routing";
-import { codexAuth, expandHome } from "flue-codex-oauth";
-import { Hono } from "hono";
-
-const app = new Hono();
-const authPath = expandHome(
-  process.env.FLUE_CODEX_AUTH_PATH ?? "~/.flue/openai-codex.json",
-);
-const authRequested = process.env.FLUE_CODEX_AUTH_ENABLED === "1";
-const codex = existsSync(authPath) || authRequested ? codexAuth({ authPath }) : undefined;
-
-if (codex) {
-  await codex.configure();
-  app.use("*", codex.middleware());
-}
-
-app.route("/", flue());
-
-export default app;
-```
-
-`FLUE_CODEX_AUTH_ENABLED=1` is a host-app toggle: it makes missing or invalid
-auth fail startup for an environment that explicitly expects Codex. Without the
-toggle, a missing auth file leaves the rest of the app available.
-
-Create or replace the auth file:
-
-```bash
-npx flue-codex-login --auth-path ~/.flue/openai-codex.json
-npx flue-codex-login --auth-path ~/.flue/openai-codex.json --force
-```
-
-You can also hand this repo's URL to a Flue coding agent:
-
-```bash
-flue add tooling <repo-url>
-```
-
-The agent can use this README as the integration starting point.
-
-## Agent notes
-
-- Before npm publish, install the public release tarball URL shown at the top
-  of this README; do not use the git URL because it has no built `dist/` files.
-- Keep the auth file outside the repository and never store Codex OAuth tokens
-  in environment variables.
-- Use model specifiers such as `openai-codex/gpt-5.5`.
-- Run `pnpm exec flue-codex-login --doctor` after wiring the integration.
+A ready integration exits with status 0; any failed check exits with status 1.
 
 ## Security
 
-The default posture is local-file credentials, not env-var credentials.
+- Credentials stay in a local file and are never read from OAuth environment variables.
+- Refreshes are serialized per auth path and re-read under the lock so concurrent requests share one rotating-token exchange.
+- The auth path cannot be a symlink; lexical and canonical paths are checked against every forbidden path.
+- Auth and parent-directory permissions must be owner-only on POSIX systems.
+- Refresh writes use collision-resistant temporary names, `0600` mode, and atomic rename.
+- Parse and refresh errors use fixed messages so upstream responses or malformed JSON cannot leak tokens.
 
-- Auth files are written atomically through a temporary file and rename.
-- Auth files are written with owner-only `0600` permissions on POSIX systems.
-- The login CLI creates the parent directory recursively and chmods it to `0700`.
-- The default runtime guard rejects auth files inside `process.cwd()`.
-- Refresh tokens are persisted only in the auth file and are not returned by `resolveApiKey()`.
-- Token values are never logged by this package.
+Placeholder values such as `PH_TOKEN` or strings containing `placeholder` are
+allowed in the built-in Codex OAuth environment-name set so deployment
+templates can declare shape without carrying secrets.
 
-Env hygiene is enabled by default. These names must not contain real Codex OAuth material:
+## Local release verification
 
-- `OPENAI_CODEX_AUTH_JSON`
-- `OPENAI_CODEX_AUTH_FILE`
-- `OPENAI_CODEX_ACCESS_TOKEN`
-- `OPENAI_CODEX_REFRESH_TOKEN`
-- `OPENAI_CODEX_ID_TOKEN`
-- `CODEX_AUTH_JSON`
-- `CODEX_AUTH_FILE`
-- `CODEX_ACCESS_TOKEN`
-- `CODEX_REFRESH_TOKEN`
+```bash
+pnpm install --frozen-lockfile
+pnpm prepublishOnly
+pnpm pack
+```
 
-Placeholder values such as `PH_TOKEN` or strings containing `placeholder` are ignored so deployment templates can still declare shape without carrying secrets.
-
-## Links
-
-- [Flue documentation](https://flueframework.com/docs)
-- [Flue model/provider guide](https://flueframework.com/docs/guide/models)
-- [OpenAI Codex](https://openai.com/codex)
+The release workflow builds the package, runs the publish gate, and attaches
+the `.tgz` artifact to the matching GitHub release.

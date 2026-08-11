@@ -1,52 +1,24 @@
-# Basic Flue Codex OAuth Example
+# Basic Flue 2 Codex OAuth Example
 
-This is a minimal Node-target Flue app using `flue-codex-oauth` through the package's public API.
-
-## Run
-
-Install dependencies:
+This app registers the package's Pi provider with Flue 2 and mounts one agent.
 
 ```bash
 pnpm install
-```
-
-Create the Codex auth file once with the device-code flow:
-
-```bash
 pnpm login
-```
-
-The auth file lives at `~/.flue/openai-codex.json` by default. It is outside this project, written with owner-only permissions on POSIX systems, and refreshed by the app at startup and per request.
-
-Start the app:
-
-```bash
 pnpm dev
 ```
 
-The example includes one agent at `src/agents/assistant.ts` using:
+The auth file lives at `~/.flue/openai-codex.json` by default. It stays outside
+the project, uses owner-only POSIX permissions, and is resolved and refreshed
+on every model request.
+
+The integration in `src/app.ts` is intentionally small:
 
 ```ts
-model: "openai-codex/gpt-5.5"
+setProvider(codexProvider());
+app.route("/agents/assistant", createAgentRouter(assistant));
 ```
 
-Send prompts using the Flue CLI flow from the Flue quickstart or `flue docs read cli/run`.
-
-## Build
-
-```bash
-pnpm build
-```
-
-`pnpm build` runs `flue build --target node` and produces the Node artifact under `dist/`.
-
-## Verification
-
-The package root gates this example with:
-
-```bash
-pnpm -C examples/basic install
-pnpm -C examples/basic typecheck
-```
-
-That typecheck uses the parent package through `flue-codex-oauth: "file:../.."`, so it exercises the built package exports instead of relative source imports.
+The agent uses `openai-codex/gpt-5.5`. Run `pnpm build` for a Node target build,
+or run `pnpm -C examples/basic typecheck` from the package root to verify the
+public package API.

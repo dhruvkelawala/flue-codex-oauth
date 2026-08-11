@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   doctorPassed,
   formatCodexDoctorReport,
@@ -19,12 +19,10 @@ describe("Codex OAuth doctor", () => {
     expect(doctorPassed(report)).toBe(false);
   });
 
-  it("validates and registers usable credentials", async () => {
+  it("validates usable credentials through preflight", async () => {
     const authPath = authFilePath(Date.now() + 600_000);
-    const registerProvider = vi.fn();
-    const report = await runCodexDoctor({ authPath, forbiddenPaths: [], registerProvider });
+    const report = await runCodexDoctor({ authPath, forbiddenPaths: [] });
 
-    expect(registerProvider).toHaveBeenCalledWith("openai-codex", { apiKey: "test-access" });
     expect(report.checks).toContainEqual(
       expect.objectContaining({ name: "codex-auth-usable", ok: true }),
     );
@@ -39,12 +37,11 @@ describe("Codex OAuth doctor", () => {
       authPath,
       forbiddenPaths: [],
       now: () => now,
-      refreshToken: async () => ({
+      refreshCredentials: async () => ({
         access: secret,
         refresh: "refreshed-secret-refresh",
         expires: now + 3_600_000,
       }),
-      registerProvider: vi.fn(),
     });
     const output = formatCodexDoctorReport(report);
 
@@ -59,7 +56,6 @@ describe("Codex OAuth doctor", () => {
       authPath: authFilePath(Date.now() + 600_000),
       forbiddenPaths: [],
       env: { CODEX_ACCESS_TOKEN: secret },
-      registerProvider: vi.fn(),
     });
     const output = formatCodexDoctorReport(report);
 
