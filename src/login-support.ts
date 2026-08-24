@@ -12,25 +12,38 @@ export interface LoginPlanError {
   error: string;
 }
 
-export const DEFAULT_AUTH_PATH = "~/.flue/openai-codex.json";
+/** CLI-facing labels and defaults for one login command. */
+export interface LoginCliConfig {
+  /** Human label used in messages, e.g. "Codex". */
+  label: string;
+  /** Installed bin name, e.g. "flue-codex-login". */
+  binName: string;
+  /** Environment variable that may hold the auth path. */
+  authPathEnvName: string;
+  /** Default auth path, e.g. "~/.flue/openai-codex.json". */
+  defaultAuthPath: string;
+  /** One-line flow description shown in usage output. */
+  flowDescription: string;
+}
 
 /**
- * Pure decision function for the login CLI. `argv` excludes node/script.
+ * Pure decision function for a login CLI. `argv` excludes node/script.
  */
-export function planLogin(
+export function planLoginFor(
+  cli: LoginCliConfig,
   argv: string[],
   env: Record<string, string | undefined>,
   cwd: string,
   fileExists: (p: string) => boolean,
 ): LoginPlan | LoginPlanError {
-  const authPathPlan = planAuthPath(argv, env, cwd);
+  const authPathPlan = planAuthPathFor(cli, argv, env, cwd);
   if ("error" in authPathPlan) return authPathPlan;
   const { authPath } = authPathPlan;
 
   const force = argv.includes("--force");
   if (fileExists(authPath) && !force) {
     return {
-      error: `Codex auth file already exists: ${authPath}. Re-run with --force to overwrite.`,
+      error: `${cli.label} auth file already exists: ${authPath}. Re-run with --force to overwrite.`,
     };
   }
 
@@ -38,7 +51,8 @@ export function planLogin(
 }
 
 /** Resolve and validate the shared auth path for login and doctor commands. */
-export function planAuthPath(
+export function planAuthPathFor(
+  cli: LoginCliConfig,
   argv: string[],
   env: Record<string, string | undefined>,
   cwd: string,
@@ -47,34 +61,35 @@ export function planAuthPath(
   if ("error" in parsedAuthPath) return parsedAuthPath;
 
   const rawAuthPath =
-    parsedAuthPath.value ?? clean(env.FLUE_CODEX_AUTH_PATH) ?? DEFAULT_AUTH_PATH;
+    parsedAuthPath.value ?? clean(env[cli.authPathEnvName]) ?? cli.defaultAuthPath;
   const expandedAuthPath = expandHome(rawAuthPath);
 
   if (!isAbsolute(expandedAuthPath)) {
-    return { error: "Codex auth path must be absolute after expanding '~'." };
+    return { error: `${cli.label} auth path must be absolute after expanding '~'.` };
   }
 
   const authPath = resolve(expandedAuthPath);
   if (!isHomeDirectory(cwd) && isPathInside(cwd, authPath)) {
     return {
-      error: `Refusing to use Codex auth inside the project directory: ${authPath}`,
+      error: `Refusing to use ${cli.label} auth inside the project directory: ${authPath}`,
     };
   }
 
   return { authPath };
 }
 
-export function usage(): string {
-  return `Usage: flue-codex-login [--auth-path /path/to/openai-codex.json] [--force]
-       flue-codex-login --doctor [--auth-path /path/to/openai-codex.json]
+export function usageFor(cli: LoginCliConfig): string {
+  const authFileName = cli.defaultAuthPath.split("/").pop() ?? "auth.json";
+  return `Usage: ${cli.binName} [--auth-path /path/to/${authFileName}] [--force]
+       ${cli.binName} --doctor [--auth-path /path/to/${authFileName}]
 
-Runs the OpenAI Codex device-code flow and writes a local auth file.
+${cli.flowDescription}
 Use --doctor (or --check) to validate an existing integration without printing tokens.
 
 Auth path resolution order:
   1. --auth-path <path>
-  2. FLUE_CODEX_AUTH_PATH
-  3. ${DEFAULT_AUTH_PATH}
+  2. ${cli.authPathEnvName}
+  3. ${cli.defaultAuthPath}
 
 Options:
   --auth-path <path>  Absolute auth file path. A leading ~/ is expanded.

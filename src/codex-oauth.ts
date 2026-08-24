@@ -1,5 +1,6 @@
 import type { OAuthCredential, OAuthCredentials } from "@earendil-works/pi-ai";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { withoutCredentialType } from "./oauth-credentials.js";
 
 /** Return the OAuth implementation shared by login and request-time refresh. */
 export function codexOAuth() {
@@ -17,12 +18,4 @@ export async function refreshCodexCredentials(
     type: "oauth",
   } as OAuthCredential);
   return withoutCredentialType(refreshed);
-}
-
-/** Remove Pi's storage discriminator before writing the package auth file. */
-export function withoutCredentialType(
-  credential: OAuthCredential,
-): OAuthCredentials {
-  const { type: _type, ...persisted } = credential;
-  return persisted;
 }

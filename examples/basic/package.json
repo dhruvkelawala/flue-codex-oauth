@@ -6,7 +6,8 @@
     "typecheck": "tsc --noEmit",
     "dev": "flue dev --target node",
     "build": "flue build --target node",
-    "login": "flue-codex-login"
+    "login": "flue-codex-login",
+    "login:claude": "flue-claude-login"
   },
   "dependencies": {
     "@flue/runtime": "2.0.3",

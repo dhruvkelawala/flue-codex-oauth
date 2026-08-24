@@ -13,13 +13,13 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  expandHome,
   readAuthStatus,
   resolveApiKey,
   validateAuthPath,
   writeAuthFileAtomic,
   type CodexOAuthCredentials,
-} from "../src/credential-store.ts";
+} from "../src/codex-credential-store.ts";
+import { expandHome } from "../src/credential-store.ts";
 import { testCredentials, writeAuthFile } from "./auth-fixture.ts";
 
 describe("credential store", () => {
