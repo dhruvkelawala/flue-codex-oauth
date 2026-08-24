@@ -1,12 +1,13 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   codexProvider,
   codexProviderChecks,
   preflight,
 } from "../src/codex-provider.ts";
+import { createAuthFilePath, writeAuthFile } from "./auth-fixture.ts";
 
 const authContext = {
   env: vi.fn(async () => undefined),
@@ -15,7 +16,7 @@ const authContext = {
 
 describe("codexProvider", () => {
   it("returns a Pi provider whose auth resolves from the file per request", async () => {
-    const authPath = authFilePath();
+    const authPath = createAuthFilePath();
     writeAuthFile(authPath, Date.now() + 600_000);
 
     const provider = codexProvider({ authPath, forbiddenPaths: [] });
@@ -35,33 +36,22 @@ describe("codexProvider", () => {
     });
   });
 
-  it("refreshes stale credentials through the request-time resolver", async () => {
-    const authPath = authFilePath();
-    const now = Date.now();
-    const refreshCredentials = vi.fn(async () => ({
-      access: "refreshed-access",
-      refresh: "refreshed-refresh",
-      expires: now + 3_600_000,
-      accountId: "acct_ready_test",
-    }));
-    writeAuthFile(authPath, now - 1_000);
+  it("reports a normalized source path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-provider-source-"));
+    const authPath = `${root}/nested/../openai-codex.json`;
+    const normalizedAuthPath = resolve(authPath);
+    writeAuthFile(normalizedAuthPath, Date.now() + 600_000);
 
-    const provider = codexProvider({
-      authPath,
-      forbiddenPaths: [],
-      now: () => now,
-      refreshCredentials,
-    });
+    const provider = codexProvider({ authPath, forbiddenPaths: [] });
 
     await expect(provider.auth.apiKey?.resolve({ ctx: authContext })).resolves.toEqual({
-      auth: { apiKey: "refreshed-access" },
-      source: authPath,
+      auth: { apiKey: "test-access" },
+      source: normalizedAuthPath,
     });
-    expect(refreshCredentials).toHaveBeenCalledTimes(1);
   });
 
   it("preflights once and returns only safe status fields", async () => {
-    const authPath = authFilePath();
+    const authPath = createAuthFilePath();
     const expires = Date.now() + 600_000;
     writeAuthFile(authPath, expires);
 
@@ -82,44 +72,32 @@ describe("codexProvider", () => {
     ).toThrow("codex-auth-path-absolute");
   });
 
-  it("aggregates path and env hygiene failures before creating a provider", () => {
+  it("reports path and environment hygiene failures", () => {
     const forbiddenRoot = mkdtempSync(join(tmpdir(), "codex-auth-forbidden-"));
     const authPath = join(forbiddenRoot, "openai-codex.json");
-    const options = {
-      authPath,
-      forbiddenPaths: [forbiddenRoot],
-      env: { CODEX_REFRESH_TOKEN: "real-refresh-token" },
-    };
+    const options = { authPath, forbiddenPaths: [forbiddenRoot] };
+    const env = { CODEX_REFRESH_TOKEN: "real-refresh-token" };
 
-    expect(codexProviderChecks(options)).toEqual(
+    expect(codexProviderChecks(options, env)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "codex-auth-path-outside-forbidden", ok: false }),
         expect.objectContaining({ name: "codex-no-env-credentials", ok: false }),
       ]),
     );
-    expect(() => codexProvider(options)).toThrow(
-      /codex-auth-path-outside-forbidden[\s\S]*codex-no-env-credentials/,
-    );
+    expect(() => codexProvider(options)).toThrow("codex-auth-path-outside-forbidden");
+  });
+
+  it("always enforces environment hygiene", () => {
+    const authPath = createAuthFilePath();
+    writeAuthFile(authPath, Date.now() + 600_000);
+    vi.stubEnv("CODEX_REFRESH_TOKEN", "real-refresh-token");
+
+    try {
+      expect(() => codexProvider({ authPath, forbiddenPaths: [] })).toThrow(
+        "codex-no-env-credentials",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
-
-function authFilePath(): string {
-  return join(mkdtempSync(join(tmpdir(), "codex-provider-")), "openai-codex.json");
-}
-
-function writeAuthFile(path: string, expires: number, access = "test-access"): void {
-  writeFileSync(
-    path,
-    JSON.stringify({
-      provider: "openai-codex",
-      credentials: {
-        access,
-        refresh: "test-refresh",
-        expires,
-        accountId: "acct_ready_test",
-      },
-    }),
-    { mode: 0o600 },
-  );
-  chmodSync(path, 0o600);
-}

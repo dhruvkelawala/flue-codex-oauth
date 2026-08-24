@@ -6,6 +6,7 @@ import {
   readdirSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
   writeAuthFileAtomic,
   type CodexOAuthCredentials,
 } from "../src/credential-store.ts";
+import { testCredentials, writeAuthFile } from "./auth-fixture.ts";
 
 describe("credential store", () => {
   it("returns stored access credentials without refreshing when fresh", async () => {
@@ -43,7 +45,7 @@ describe("credential store", () => {
   it("serializes refreshes per path and re-reads under the lock", async () => {
     const authPath = authFilePath();
     const now = Date.now();
-    const refreshedCredentials = credentials(now + 3_600_000, "refreshed-access");
+    const refreshedCredentials = testCredentials(now + 3_600_000, "refreshed-access");
     let releaseRefresh!: (value: CodexOAuthCredentials) => void;
     const refreshReady = new Promise<CodexOAuthCredentials>((resolve) => {
       releaseRefresh = resolve;
@@ -81,6 +83,27 @@ describe("credential store", () => {
     await expect(resolveApiKey({ authPath, forbiddenPaths: [forbiddenRoot] })).rejects.toThrow(
       "codex-auth-path-outside-forbidden",
     );
+  });
+
+  it("revalidates the auth path after an asynchronous refresh", async () => {
+    const authPath = authFilePath();
+    const symlinkTarget = authFilePath();
+    const now = Date.now();
+    writeAuthFile(authPath, now - 1_000);
+    writeAuthFile(symlinkTarget, now + 3_600_000);
+
+    await expect(
+      resolveApiKey({
+        authPath,
+        forbiddenPaths: [],
+        now: () => now,
+        refreshCredentials: async () => {
+          unlinkSync(authPath);
+          symlinkSync(symlinkTarget, authPath);
+          return testCredentials(now + 3_600_000, "refreshed-access");
+        },
+      }),
+    ).rejects.toThrow("codex-auth-path-not-a-symlink");
   });
 
   it("rejects symlink auth files", () => {
@@ -126,7 +149,7 @@ describe("credential store", () => {
     const parseError = await resolveApiKey({ authPath, forbiddenPaths: [] }).catch(
       (error: unknown) => error as Error,
     );
-    expect(parseError.message).toBe(`Invalid Codex auth file ${authPath}: not valid JSON`);
+    expect(parseError.message).toBe("Invalid Codex auth file: not valid JSON.");
     expect(parseError.message).not.toContain(jsonSecret);
 
     const refreshSecret = "secret-in-refresh-error";
@@ -163,7 +186,7 @@ describe("credential store", () => {
 
     await writeAuthFileAtomic(authPath, {
       provider: "openai-codex",
-      credentials: credentials(Date.now() + 60_000),
+      credentials: testCredentials(Date.now() + 60_000),
       lastRefresh: new Date(0).toISOString(),
     });
 
@@ -184,23 +207,7 @@ function authFilePath(): string {
   return join(mkdtempSync(join(tmpdir(), "codex-auth-store-")), "openai-codex.json");
 }
 
-function writeAuthFile(path: string, expires: number, access = "test-access"): void {
-  writeJsonFile(path, {
-    provider: "openai-codex",
-    credentials: credentials(expires, access),
-  });
-}
-
 function writeJsonFile(path: string, payload: unknown): void {
   writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
   chmodSync(path, 0o600);
-}
-
-function credentials(expires: number, access = "test-access"): CodexOAuthCredentials {
-  return {
-    access,
-    refresh: "test-refresh",
-    expires,
-    accountId: "acct_ready_test",
-  };
 }

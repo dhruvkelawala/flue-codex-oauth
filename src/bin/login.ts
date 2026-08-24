@@ -2,7 +2,7 @@
 import { existsSync, promises as fsPromises } from "node:fs";
 import { dirname } from "node:path";
 import type { AuthInteraction } from "@earendil-works/pi-ai";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { codexOAuth, withoutCredentialType } from "../codex-oauth.js";
 import { writeAuthFileAtomic } from "../credential-store.js";
 import { planAuthPath, planLogin, usage } from "../login-support.js";
 
@@ -57,12 +57,14 @@ const parentDir = dirname(plan.authPath);
 await fsPromises.mkdir(parentDir, { recursive: true, mode: 0o700 });
 await fsPromises.chmod(parentDir, 0o700);
 
-const oauth = openaiCodexProvider().auth.oauth;
-if (!oauth) throw new Error("Pi openai-codex provider does not expose OAuth login.");
-
 const interaction: AuthInteraction = {
   async prompt(prompt) {
-    if (prompt.type === "select") return "device_code";
+    if (
+      prompt.type === "select" &&
+      prompt.options.some((option) => option.id === "device_code")
+    ) {
+      return "device_code";
+    }
     throw new Error("The Codex device-code login requested unexpected user input.");
   },
   notify(event) {
@@ -72,7 +74,7 @@ const interaction: AuthInteraction = {
     }
   },
 };
-const { type: _type, ...credentials } = await oauth.login(interaction);
+const credentials = withoutCredentialType(await codexOAuth().login(interaction));
 
 await writeAuthFileAtomic(plan.authPath, {
   provider: "openai-codex",

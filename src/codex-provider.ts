@@ -2,6 +2,7 @@ import { createProvider, type Provider } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import {
+  assertSafeChecks,
   expandHome,
   readAuthStatus,
   resolveApiKey,
@@ -12,27 +13,29 @@ import {
 } from "./credential-store.js";
 import { checkEnvHygiene } from "./env-hygiene.js";
 
-export const CODEX_PROVIDER_ID = "openai-codex";
-export const DEFAULT_AUTH_PATH = "~/.flue/openai-codex.json";
+const CODEX_PROVIDER_ID = "openai-codex";
+const DEFAULT_AUTH_PATH = "~/.flue/openai-codex.json";
 
-export interface CodexProviderOptions
-  extends Omit<CodexCredentialStoreOptions, "authPath"> {
+export interface CodexProviderOptions {
   /** Auth file path; "~/" is expanded. Default: "~/.flue/openai-codex.json". */
   authPath?: string;
-  /** Extra env names to reject alongside the built-in Codex list. */
-  rejectedEnvNames?: string[];
-  /** Set false to skip env hygiene checks entirely. Default: true. */
-  envHygiene?: boolean;
-  /** Injectable environment, for tests and custom bootstrapping. */
-  env?: Record<string, string | undefined>;
+  /** Paths the auth file must not equal or live inside. Default: [process.cwd()]. */
+  forbiddenPaths?: string[];
+  /** Refresh this long before expiry. Default: 300_000 (5 min). */
+  refreshSkewMs?: number;
 }
+
+export type CodexPreflightStatus = Pick<
+  CodexAuthStatus,
+  "authPath" | "expiresAt" | "accountId"
+>;
 
 /** Build a Pi provider that resolves the external auth file on every model request. */
 export function codexProvider(
   options: CodexProviderOptions = {},
 ): Provider<"openai-codex-responses"> {
   const storeOptions = toStoreOptions(options);
-  assertSafe(options, storeOptions);
+  assertSafe(storeOptions);
 
   return createProvider({
     id: CODEX_PROVIDER_ID,
@@ -41,9 +44,9 @@ export function codexProvider(
       apiKey: {
         name: "Codex subscription auth file",
         resolve: async () => {
-          assertSafe(options, storeOptions);
-          const { apiKey } = await resolveApiKey(storeOptions);
-          return { auth: { apiKey }, source: storeOptions.authPath };
+          assertSafe(storeOptions);
+          const { apiKey, status } = await resolveApiKey(storeOptions);
+          return { auth: { apiKey }, source: status.authPath };
         },
       },
     },
@@ -55,61 +58,53 @@ export function codexProvider(
 /** Resolve once so a host can fail startup closed without exposing token material. */
 export async function preflight(
   options: CodexProviderOptions = {},
-): Promise<Pick<CodexAuthStatus, "authPath" | "expiresAt" | "accountId">> {
+): Promise<CodexPreflightStatus> {
   const storeOptions = toStoreOptions(options);
-  assertSafe(options, storeOptions);
+  assertSafe(storeOptions);
   const { status } = await resolveApiKey(storeOptions);
-  return {
-    authPath: status.authPath,
-    ...(status.expiresAt ? { expiresAt: status.expiresAt } : {}),
-    ...(status.accountId ? { accountId: status.accountId } : {}),
-  };
+  return safePreflightStatus(status);
 }
 
-/** Non-throwing snapshot of the configured auth file. */
+/** @internal Non-throwing snapshot used by the doctor command. */
 export function codexAuthStatus(options: CodexProviderOptions = {}): CodexAuthStatus {
   return readAuthStatus(toStoreOptions(options));
 }
 
-/** Path-safety and environment-hygiene checks without refreshing credentials. */
-export function codexProviderChecks(options: CodexProviderOptions = {}): AuthCheck[] {
-  const checks = validateAuthPath(toStoreOptions(options));
-  if (options.envHygiene !== false) {
-    checks.push(...checkEnvHygiene(options.env ?? process.env, options.rejectedEnvNames));
-  }
-  return checks;
+/** @internal Safety checks used by the provider and doctor command. */
+export function codexProviderChecks(
+  options: CodexProviderOptions = {},
+  env: Record<string, string | undefined> = process.env,
+): AuthCheck[] {
+  return safetyChecks(toStoreOptions(options), env);
 }
 
-function assertSafe(
-  options: CodexProviderOptions,
+function safetyChecks(
   storeOptions: CodexCredentialStoreOptions,
-): void {
-  const checks = [
-    ...validateAuthPath(storeOptions),
-    ...(options.envHygiene === false
-      ? []
-      : checkEnvHygiene(options.env ?? process.env, options.rejectedEnvNames)),
-  ];
-  const failed = checks.filter((item) => !item.ok && item.severity === "error");
-  if (failed.length > 0) {
-    throw new Error(
-      `Codex subscription auth is not safe to use:\n${failed.map((item) => `- ${item.name}: ${item.message}`).join("\n")}`,
-    );
-  }
+  env: Record<string, string | undefined>,
+): AuthCheck[] {
+  return [...validateAuthPath(storeOptions), ...checkEnvHygiene(env)];
+}
+
+function assertSafe(storeOptions: CodexCredentialStoreOptions): void {
+  assertSafeChecks(safetyChecks(storeOptions, process.env));
 }
 
 function toStoreOptions(options: CodexProviderOptions): CodexCredentialStoreOptions {
-  return {
+  const storeOptions: CodexCredentialStoreOptions = {
     authPath: expandHome(options.authPath ?? DEFAULT_AUTH_PATH),
-    ...(options.forbiddenPaths !== undefined
-      ? { forbiddenPaths: options.forbiddenPaths }
-      : {}),
-    ...(options.refreshSkewMs !== undefined
-      ? { refreshSkewMs: options.refreshSkewMs }
-      : {}),
-    ...(options.now !== undefined ? { now: options.now } : {}),
-    ...(options.refreshCredentials !== undefined
-      ? { refreshCredentials: options.refreshCredentials }
-      : {}),
   };
+  if (options.forbiddenPaths !== undefined) {
+    storeOptions.forbiddenPaths = options.forbiddenPaths;
+  }
+  if (options.refreshSkewMs !== undefined) {
+    storeOptions.refreshSkewMs = options.refreshSkewMs;
+  }
+  return storeOptions;
+}
+
+function safePreflightStatus(status: CodexAuthStatus): CodexPreflightStatus {
+  const safeStatus: CodexPreflightStatus = { authPath: status.authPath };
+  if (status.expiresAt !== undefined) safeStatus.expiresAt = status.expiresAt;
+  if (status.accountId !== undefined) safeStatus.accountId = status.accountId;
+  return safeStatus;
 }

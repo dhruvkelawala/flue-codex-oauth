@@ -79,9 +79,9 @@ The result contains safe metadata only: `authPath`, `expiresAt`, and optional
 | `authPath` | `~/.flue/openai-codex.json` | Auth JSON file to read, refresh, and atomically rewrite. `~/` is expanded. |
 | `forbiddenPaths` | `[process.cwd()]` | Paths the auth file must not equal or live inside. SQLite `-wal`/`-shm` sidecars are also rejected. |
 | `refreshSkewMs` | `300_000` | Refresh this many milliseconds before expiry. |
-| `rejectedEnvNames` | `[]` | Additional environment names that must not contain credential material. |
-| `envHygiene` | `true` | Set to `false` to skip environment checks. |
-| `env` | `process.env` | Environment map used by hygiene checks. |
+
+Environment hygiene is always enforced against the built-in Codex OAuth
+environment-name set. It cannot be disabled through provider options.
 
 `FLUE_CODEX_AUTH_PATH` is used by the login and doctor CLI when `--auth-path`
 is not supplied. It is a path, not credential material.

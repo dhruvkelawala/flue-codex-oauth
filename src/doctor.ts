@@ -1,5 +1,7 @@
+import { setProvider } from "@flue/runtime";
 import {
   codexAuthStatus,
+  codexProvider,
   codexProviderChecks,
   preflight,
   type CodexProviderOptions,
@@ -14,10 +16,11 @@ export interface CodexDoctorReport {
 /** Validate the installed integration while keeping all credential material private. */
 export async function runCodexDoctor(
   options: CodexProviderOptions = {},
+  env: Record<string, string | undefined> = process.env,
 ): Promise<CodexDoctorReport> {
   const status = codexAuthStatus(options);
   const checks: AuthCheck[] = [
-    ...codexProviderChecks(options),
+    ...codexProviderChecks(options, env),
     {
       name: "codex-auth-file-exists",
       ok: status.configured,
@@ -29,27 +32,21 @@ export async function runCodexDoctor(
   if (!hasErrors(checks)) {
     try {
       const resolved = await preflight(options);
+      setProvider(codexProvider(options));
       checks.push(
         passed(
           "codex-auth-usable",
-          "Credentials are readable and refreshable through the provider factory.",
+          "Credentials are readable and refreshable, and the provider registered successfully.",
         ),
       );
-      return {
-        checks,
-        status: {
-          configured: true,
-          authPath: resolved.authPath,
-          ...(resolved.expiresAt ? { expiresAt: resolved.expiresAt } : {}),
-          ...(resolved.accountId ? { accountId: resolved.accountId } : {}),
-        },
-      };
+      return { checks, status: { configured: true, ...resolved } };
     } catch {
       checks.push({
         name: "codex-auth-usable",
         ok: false,
         severity: "error",
-        message: "Credentials could not be read or refreshed when needed.",
+        message:
+          "Credentials could not be read, refreshed when needed, or registered with the host runtime.",
       });
     }
   }

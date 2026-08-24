@@ -9,8 +9,7 @@ import {
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import type { OAuthCredential } from "@earendil-works/pi-ai";
+import { refreshCodexCredentials } from "./codex-oauth.js";
 
 const DEFAULT_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const CODEX_PROVIDER_ID = "openai-codex";
@@ -53,6 +52,15 @@ export interface AuthCheck {
   message: string;
 }
 
+export function assertSafeChecks(checks: AuthCheck[]): void {
+  const failed = checks.filter((item) => !item.ok && item.severity === "error");
+  if (failed.length > 0) {
+    throw new Error(
+      `Codex subscription auth is not safe to use:\n${failed.map((item) => `- ${item.name}: ${item.message}`).join("\n")}`,
+    );
+  }
+}
+
 interface CodexAuthFile {
   provider: typeof CODEX_PROVIDER_ID;
   credentials: CodexOAuthCredentials;
@@ -85,8 +93,8 @@ export function validateAuthPath(options: CodexCredentialStoreOptions): AuthChec
     forbiddenPaths.every((forbiddenPath) => {
       const canonicalForbiddenPath = canonicalPath(forbiddenPath);
       return (
-        !conflictsWithForbiddenPath(forbiddenPath, lexicalAuthPath) &&
-        !conflictsWithForbiddenPath(canonicalForbiddenPath, canonicalAuthPath)
+        !isInsideOrSqliteSidecarOf(forbiddenPath, lexicalAuthPath) &&
+        !isInsideOrSqliteSidecarOf(canonicalForbiddenPath, canonicalAuthPath)
       );
     });
 
@@ -144,23 +152,28 @@ export async function resolveApiKey(
   const authPath = resolve(expandHome(options.authPath));
   const refreshSkewMs = options.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS;
   let authFile = readAuthFile(authPath);
+  const initialNow = options.now?.() ?? Date.now();
 
-  if (isStale(authFile.credentials, options.now?.() ?? Date.now(), refreshSkewMs)) {
-    const previous = refreshLocks.get(authPath) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(async () => {
+  if (isStale(authFile.credentials, initialNow, refreshSkewMs)) {
+    const previousRefresh = refreshLocks.get(authPath) ?? Promise.resolve();
+    const queuedRefresh = previousRefresh.catch(() => {}).then(async () => {
+      // Revalidate under the lock because the path may have changed while waiting.
+      assertAuthPath(options);
       // A prior waiter may already have exchanged the rotating refresh token.
-      const latest = readAuthFile(authPath);
+      const latestAuthFile = readAuthFile(authPath);
       const now = options.now?.() ?? Date.now();
-      if (!isStale(latest.credentials, now, refreshSkewMs)) return;
+      if (!isStale(latestAuthFile.credentials, now, refreshSkewMs)) return;
 
-      const refresh = options.refreshCredentials ?? refreshViaPiOAuth;
+      const refresh = options.refreshCredentials ?? refreshCodexCredentials;
       let credentials: CodexOAuthCredentials;
       try {
-        credentials = await refresh(latest.credentials);
+        credentials = await refresh(latestAuthFile.credentials);
       } catch (error) {
         throw new Error("Codex subscription token refresh failed.", { cause: error });
       }
-      validateCredentials(credentials, authPath);
+      validateCredentials(credentials);
+      // Refresh is asynchronous, so reject a symlink/path swap before atomic rename.
+      assertAuthPath(options);
       await writeAuthFileAtomic(authPath, {
         provider: CODEX_PROVIDER_ID,
         credentials,
@@ -168,11 +181,11 @@ export async function resolveApiKey(
       });
     });
 
-    refreshLocks.set(authPath, current);
+    refreshLocks.set(authPath, queuedRefresh);
     try {
-      await current;
+      await queuedRefresh;
     } finally {
-      if (refreshLocks.get(authPath) === current) refreshLocks.delete(authPath);
+      if (refreshLocks.get(authPath) === queuedRefresh) refreshLocks.delete(authPath);
     }
     authFile = readAuthFile(authPath);
   }
@@ -202,26 +215,8 @@ export async function writeAuthFileAtomic(
   }
 }
 
-async function refreshViaPiOAuth(
-  credentials: CodexOAuthCredentials,
-): Promise<CodexOAuthCredentials> {
-  const oauth = openaiCodexProvider().auth.oauth;
-  if (!oauth) throw new Error("Pi openai-codex provider does not expose OAuth refresh.");
-
-  const refreshed = await oauth.refresh({ ...credentials, type: "oauth" } as OAuthCredential);
-  const { type: _type, ...persisted } = refreshed;
-  return persisted;
-}
-
 function assertAuthPath(options: CodexCredentialStoreOptions): void {
-  const failed = validateAuthPath(options).filter(
-    (item) => !item.ok && item.severity === "error",
-  );
-  if (failed.length > 0) {
-    throw new Error(
-      `Codex subscription auth is not safe to use:\n${failed.map((item) => `- ${item.name}: ${item.message}`).join("\n")}`,
-    );
-  }
+  assertSafeChecks(validateAuthPath(options));
 }
 
 function readAuthFile(authPath: string): CodexAuthFile {
@@ -229,28 +224,26 @@ function readAuthFile(authPath: string): CodexAuthFile {
   try {
     raw = readFileSync(authPath, "utf8");
   } catch (error) {
-    throw new Error(`Could not read Codex auth file ${authPath}.`, { cause: error });
+    throw new Error("Could not read Codex auth file.", { cause: error });
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch (error) {
-    throw new Error(`Invalid Codex auth file ${authPath}: not valid JSON`, { cause: error });
+    throw new Error("Invalid Codex auth file: not valid JSON.", { cause: error });
   }
 
   if (!isObject(parsed))
-    throw new Error(`Invalid Codex auth file ${authPath}: top-level value must be an object`);
+    throw new Error("Invalid Codex auth file: top-level value must be an object.");
   if (parsed.provider !== CODEX_PROVIDER_ID)
-    throw new Error(`Invalid Codex auth file ${authPath}: provider must be ${CODEX_PROVIDER_ID}`);
+    throw new Error("Invalid Codex auth file: unexpected provider.");
   if (!isObject(parsed.credentials))
-    throw new Error(`Invalid Codex auth file ${authPath}: credentials must be an object`);
+    throw new Error("Invalid Codex auth file: credentials must be an object.");
 
-  validateCredentials(parsed.credentials, authPath);
+  validateCredentials(parsed.credentials);
   if (parsed.lastRefresh !== undefined && typeof parsed.lastRefresh !== "string") {
-    throw new Error(
-      `Invalid Codex auth file ${authPath}: lastRefresh must be a string when present`,
-    );
+    throw new Error("Invalid Codex auth file: lastRefresh must be a string when present.");
   }
 
   return {
@@ -262,22 +255,19 @@ function readAuthFile(authPath: string): CodexAuthFile {
 
 function validateCredentials(
   value: Record<string, unknown>,
-  authPath: string,
 ): asserts value is CodexOAuthCredentials {
   if (typeof value.access !== "string" || value.access.length === 0) {
     throw new Error(
-      `Invalid Codex auth file ${authPath}: credentials.access must be a non-empty string`,
+      "Invalid Codex auth file: credentials.access must be a non-empty string.",
     );
   }
   if (typeof value.refresh !== "string" || value.refresh.length === 0) {
     throw new Error(
-      `Invalid Codex auth file ${authPath}: credentials.refresh must be a non-empty string`,
+      "Invalid Codex auth file: credentials.refresh must be a non-empty string.",
     );
   }
   if (typeof value.expires !== "number" || !Number.isFinite(value.expires)) {
-    throw new Error(
-      `Invalid Codex auth file ${authPath}: credentials.expires must be a finite number`,
-    );
+    throw new Error("Invalid Codex auth file: credentials.expires must be a finite number.");
   }
 }
 
@@ -331,7 +321,7 @@ function codexAuthFileModeIsSafe(authPath: string): boolean {
   }
 }
 
-function conflictsWithForbiddenPath(forbiddenPath: string, authPath: string): boolean {
+function isInsideOrSqliteSidecarOf(forbiddenPath: string, authPath: string): boolean {
   return (
     isPathInside(forbiddenPath, authPath) ||
     authPath === `${forbiddenPath}-wal` ||
