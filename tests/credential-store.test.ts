@@ -1,29 +1,33 @@
 import {
   chmodSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import {
   expandHome,
   readAuthStatus,
   resolveApiKey,
   validateAuthPath,
   writeAuthFileAtomic,
+  type CodexOAuthCredentials,
 } from "../src/credential-store.ts";
+import { testCredentials, writeAuthFile } from "./auth-fixture.ts";
 
 describe("credential store", () => {
-  it("returns stored access credentials without refreshing when not stale", async () => {
+  it("returns stored access credentials without refreshing when fresh", async () => {
     const authPath = authFilePath();
     const now = Date.now();
     writeAuthFile(authPath, now + 60_000);
-    const refreshToken = vi.fn(async () => {
+    const refreshCredentials = vi.fn(async () => {
       throw new Error("refresh should not be called");
     });
 
@@ -31,141 +35,158 @@ describe("credential store", () => {
       authPath,
       refreshSkewMs: 0,
       now: () => now,
-      refreshToken,
+      refreshCredentials,
     });
 
     expect(result.apiKey).toBe("test-access");
-    expect(refreshToken).not.toHaveBeenCalled();
+    expect(refreshCredentials).not.toHaveBeenCalled();
   });
 
-  it("refreshes stale credentials and persists the refreshed file", async () => {
+  it("serializes refreshes per path and re-reads under the lock", async () => {
     const authPath = authFilePath();
     const now = Date.now();
-    const refreshedCredentials = {
-      access: "refreshed-access",
-      refresh: "refreshed-refresh",
-      expires: now + 3_600_000,
-      accountId: "acct_ready_test",
-    };
+    const refreshedCredentials = testCredentials(now + 3_600_000, "refreshed-access");
+    let releaseRefresh!: (value: CodexOAuthCredentials) => void;
+    const refreshReady = new Promise<CodexOAuthCredentials>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refreshCredentials = vi.fn(async () => refreshReady);
     writeAuthFile(authPath, now - 1_000);
 
-    const result = await resolveApiKey({
-      authPath,
-      now: () => now,
-      refreshToken: async () => refreshedCredentials,
-    });
-    const persisted = JSON.parse(readFileSync(authPath, "utf8")) as {
-      credentials: OAuthCredentials;
-      lastRefresh?: string;
-    };
+    const calls = Array.from({ length: 5 }, () =>
+      resolveApiKey({ authPath, now: () => now, refreshCredentials }),
+    );
+    await vi.waitFor(() => expect(refreshCredentials).toHaveBeenCalledTimes(1));
+    releaseRefresh(refreshedCredentials);
+    const results = await Promise.all(calls);
 
-    expect(result.apiKey).toBe(refreshedCredentials.access);
-    expect(result.status.accountId).toBe("acct_ready_test");
-    expect(result.status.lastRefresh).toBe(new Date(now).toISOString());
-    expect(persisted.credentials).toEqual(refreshedCredentials);
-    expect(persisted.lastRefresh).toBe(new Date(now).toISOString());
-    expect(JSON.stringify(result)).not.toContain(refreshedCredentials.refresh);
+    expect(refreshCredentials).toHaveBeenCalledTimes(1);
+    expect(results.map((result) => result.apiKey)).toEqual(
+      Array.from({ length: 5 }, () => "refreshed-access"),
+    );
+    expect(JSON.parse(readFileSync(authPath, "utf8")).credentials).toEqual(
+      refreshedCredentials,
+    );
   });
 
-  it("rejects auth paths inside explicitly forbidden paths", async () => {
-    const forbiddenRoot = mkdtempSync(join(tmpdir(), "codex-auth-forbidden-"));
-    const authPath = join(forbiddenRoot, "openai-codex.json");
-    const checks = validateAuthPath({ authPath, forbiddenPaths: [forbiddenRoot] });
+  it("rejects lexical and canonical paths inside forbidden paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-auth-canonical-"));
+    const forbiddenRoot = join(root, "forbidden");
+    const linkedRoot = join(root, "linked");
+    mkdirSync(forbiddenRoot, { mode: 0o700 });
+    symlinkSync(forbiddenRoot, linkedRoot);
+    const authPath = join(linkedRoot, "openai-codex.json");
 
-    expect(checks).toContainEqual(
-      expect.objectContaining({
-        name: "codex-auth-path-outside-forbidden",
-        ok: false,
-        severity: "error",
-      }),
+    expect(validateAuthPath({ authPath, forbiddenPaths: [forbiddenRoot] })).toContainEqual(
+      expect.objectContaining({ name: "codex-auth-path-outside-forbidden", ok: false }),
     );
     await expect(resolveApiKey({ authPath, forbiddenPaths: [forbiddenRoot] })).rejects.toThrow(
       "codex-auth-path-outside-forbidden",
     );
   });
 
-  it("rejects auth paths inside process.cwd() by default", async () => {
-    const authPath = join(process.cwd(), "openai-codex.json");
-    const checks = validateAuthPath({ authPath });
+  it("revalidates the auth path after an asynchronous refresh", async () => {
+    const authPath = authFilePath();
+    const symlinkTarget = authFilePath();
+    const now = Date.now();
+    writeAuthFile(authPath, now - 1_000);
+    writeAuthFile(symlinkTarget, now + 3_600_000);
 
-    expect(checks).toContainEqual(
-      expect.objectContaining({
-        name: "codex-auth-path-outside-forbidden",
-        ok: false,
-        severity: "error",
+    await expect(
+      resolveApiKey({
+        authPath,
+        forbiddenPaths: [],
+        now: () => now,
+        refreshCredentials: async () => {
+          unlinkSync(authPath);
+          symlinkSync(symlinkTarget, authPath);
+          return testCredentials(now + 3_600_000, "refreshed-access");
+        },
       }),
-    );
-    await expect(resolveApiKey({ authPath })).rejects.toThrow(
-      "codex-auth-path-outside-forbidden",
+    ).rejects.toThrow("codex-auth-path-not-a-symlink");
+  });
+
+  it("rejects symlink auth files", () => {
+    const realPath = authFilePath();
+    const symlinkPath = join(mkdtempSync(join(tmpdir(), "codex-auth-link-")), "auth.json");
+    writeAuthFile(realPath, Date.now() + 60_000);
+    symlinkSync(realPath, symlinkPath);
+
+    expect(validateAuthPath({ authPath: symlinkPath, forbiddenPaths: [] })).toContainEqual(
+      expect.objectContaining({ name: "codex-auth-path-not-a-symlink", ok: false }),
     );
   });
 
-  it("rejects relative auth paths", () => {
-    const checks = validateAuthPath({ authPath: "openai-codex.json", forbiddenPaths: [] });
+  it.each(["-wal", "-shm"])("rejects SQLite %s sidecar paths", (suffix) => {
+    const root = mkdtempSync(join(tmpdir(), "codex-auth-sqlite-"));
+    const sqlitePath = join(root, "state.sqlite");
+    const authPath = `${sqlitePath}${suffix}`;
 
-    expect(checks).toContainEqual(
-      expect.objectContaining({
-        name: "codex-auth-path-absolute",
-        ok: false,
-        severity: "error",
-      }),
+    expect(validateAuthPath({ authPath, forbiddenPaths: [sqlitePath] })).toContainEqual(
+      expect.objectContaining({ name: "codex-auth-path-outside-forbidden", ok: false }),
     );
   });
 
-  it.skipIf(process.platform === "win32")("rejects unsafe auth file modes", () => {
+  it.skipIf(process.platform === "win32")("rejects non-owner-only file and parent modes", () => {
     const authPath = authFilePath();
     writeAuthFile(authPath, Date.now() + 60_000);
     chmodSync(authPath, 0o644);
-
     expect(validateAuthPath({ authPath, forbiddenPaths: [] })).toContainEqual(
-      expect.objectContaining({
-        name: "codex-auth-file-mode",
-        ok: false,
-        severity: "error",
-      }),
+      expect.objectContaining({ name: "codex-auth-file-mode", ok: false }),
+    );
+
+    chmodSync(authPath, 0o600);
+    chmodSync(join(authPath, ".."), 0o750);
+    expect(validateAuthPath({ authPath, forbiddenPaths: [] })).toContainEqual(
+      expect.objectContaining({ name: "codex-auth-file-mode", ok: false }),
     );
   });
 
-  it.each([
-    ["wrong provider", { provider: "other", credentials: credentials(Date.now() + 60_000) }],
-    [
-      "missing access",
-      {
-        provider: "openai-codex",
-        credentials: { refresh: "test-refresh", expires: Date.now() + 60_000 },
+  it("does not leak malformed JSON or upstream refresh errors", async () => {
+    const authPath = authFilePath();
+    const jsonSecret = "secret-in-invalid-json";
+    writeFileSync(authPath, `{\"token\":\"${jsonSecret}\"`, { mode: 0o600 });
+    const parseError = await resolveApiKey({ authPath, forbiddenPaths: [] }).catch(
+      (error: unknown) => error as Error,
+    );
+    expect(parseError.message).toBe("Invalid Codex auth file: not valid JSON.");
+    expect(parseError.message).not.toContain(jsonSecret);
+
+    const refreshSecret = "secret-in-refresh-error";
+    writeAuthFile(authPath, Date.now() - 1_000);
+    const refreshError = await resolveApiKey({
+      authPath,
+      forbiddenPaths: [],
+      refreshCredentials: async () => {
+        throw new Error(refreshSecret);
       },
-    ],
-    ["non-object top level", "not an auth object"],
-  ])("throws path-qualified parse errors for %s", async (_name, payload) => {
-    const authPath = authFilePath();
-    writeJsonFile(authPath, payload);
-
-    await expect(resolveApiKey({ authPath, forbiddenPaths: [] })).rejects.toThrow(authPath);
-    await expect(resolveApiKey({ authPath, forbiddenPaths: [] })).rejects.toThrow(
-      "Invalid Codex auth file",
-    );
+    }).catch((error: unknown) => error as Error);
+    expect(refreshError.message).toBe("Codex subscription token refresh failed.");
+    expect(refreshError.message).not.toContain(refreshSecret);
   });
 
-  it("returns configured status for malformed files without throwing", () => {
-    const authPath = authFilePath();
-    writeJsonFile(authPath, "not an auth object");
+  it("returns safe status for malformed and missing files", () => {
+    const malformedPath = authFilePath();
+    writeJsonFile(malformedPath, "not an auth object");
+    expect(readAuthStatus({ authPath: malformedPath })).toEqual({
+      configured: true,
+      authPath: malformedPath,
+    });
 
-    expect(readAuthStatus({ authPath })).toEqual({ configured: true, authPath });
+    const missingPath = join(mkdtempSync(join(tmpdir(), "codex-auth-missing-")), "missing.json");
+    expect(readAuthStatus({ authPath: missingPath })).toEqual({
+      configured: false,
+      authPath: missingPath,
+    });
   });
 
-  it("returns unconfigured status for missing files without throwing", () => {
-    const authPath = join(mkdtempSync(join(tmpdir(), "codex-auth-missing-")), "missing.json");
-
-    expect(readAuthStatus({ authPath })).toEqual({ configured: false, authPath });
-  });
-
-  it("writes auth files atomically without leaving temp files", async () => {
+  it("writes atomically with owner-only mode and no leftover temp files", async () => {
     const root = mkdtempSync(join(tmpdir(), "codex-auth-write-"));
     const authPath = join(root, "openai-codex.json");
 
     await writeAuthFileAtomic(authPath, {
       provider: "openai-codex",
-      credentials: credentials(Date.now() + 60_000),
+      credentials: testCredentials(Date.now() + 60_000),
       lastRefresh: new Date(0).toISOString(),
     });
 
@@ -186,23 +207,7 @@ function authFilePath(): string {
   return join(mkdtempSync(join(tmpdir(), "codex-auth-store-")), "openai-codex.json");
 }
 
-function writeAuthFile(path: string, expires: number): void {
-  writeJsonFile(path, {
-    provider: "openai-codex",
-    credentials: credentials(expires),
-  });
-}
-
 function writeJsonFile(path: string, payload: unknown): void {
   writeFileSync(path, JSON.stringify(payload), { mode: 0o600 });
   chmodSync(path, 0o600);
-}
-
-function credentials(expires: number): OAuthCredentials {
-  return {
-    access: "test-access",
-    refresh: "test-refresh",
-    expires,
-    accountId: "acct_ready_test",
-  };
 }

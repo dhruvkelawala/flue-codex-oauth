@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { existsSync, promises as fsPromises } from "node:fs";
 import { dirname } from "node:path";
-import { loginOpenAICodexDeviceCode } from "@earendil-works/pi-ai/oauth";
+import type { AuthInteraction } from "@earendil-works/pi-ai";
+import { codexOAuth, withoutCredentialType } from "../codex-oauth.js";
 import { writeAuthFileAtomic } from "../credential-store.js";
 import { planAuthPath, planLogin, usage } from "../login-support.js";
 
@@ -22,16 +23,16 @@ if (args.includes("--doctor") || args.includes("--check")) {
 
   const runtimeName = "@flue/runtime";
   const runtimeImport = await import(runtimeName).catch(() => undefined);
-  if (!runtimeImport || typeof runtimeImport.registerProvider !== "function") {
+  if (!runtimeImport || typeof runtimeImport.setProvider !== "function") {
     failDoctorCheck(
       "flue-runtime-integration",
-      "A compatible @flue/runtime peer could not be loaded.",
+      "A compatible Flue 2 @flue/runtime peer could not be loaded.",
     );
   }
 
   const packageName = "flue-codex-oauth";
   const packageImport = await import(packageName).catch(() => undefined);
-  if (!packageImport || typeof packageImport.codexAuth !== "function") {
+  if (!packageImport || typeof packageImport.codexProvider !== "function") {
     failDoctorCheck("package-import", "The package's public export could not be loaded.");
   }
 
@@ -56,12 +57,24 @@ const parentDir = dirname(plan.authPath);
 await fsPromises.mkdir(parentDir, { recursive: true, mode: 0o700 });
 await fsPromises.chmod(parentDir, 0o700);
 
-const credentials = await loginOpenAICodexDeviceCode({
-  onDeviceCode(info) {
-    console.log(`Verification URI: ${info.verificationUri}`);
-    console.log(`User code: ${info.userCode}`);
+const interaction: AuthInteraction = {
+  async prompt(prompt) {
+    if (
+      prompt.type === "select" &&
+      prompt.options.some((option) => option.id === "device_code")
+    ) {
+      return "device_code";
+    }
+    throw new Error("The Codex device-code login requested unexpected user input.");
   },
-});
+  notify(event) {
+    if (event.type === "device_code") {
+      console.log(`Verification URI: ${event.verificationUri}`);
+      console.log(`User code: ${event.userCode}`);
+    }
+  },
+};
+const credentials = withoutCredentialType(await codexOAuth().login(interaction));
 
 await writeAuthFileAtomic(plan.authPath, {
   provider: "openai-codex",
