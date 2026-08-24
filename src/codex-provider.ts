@@ -1,105 +1,76 @@
-import { createProvider, type Provider } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import {
-  assertSafeChecks,
-  expandHome,
+  CODEX_DEFAULT_AUTH_PATH,
+  CODEX_PROVIDER_ID,
+  CODEX_STORE_PROFILE,
   readAuthStatus,
   resolveApiKey,
   validateAuthPath,
-  type AuthCheck,
   type CodexAuthStatus,
-  type CodexCredentialStoreOptions,
-} from "./credential-store.js";
+} from "./codex-credential-store.js";
 import { checkEnvHygiene } from "./env-hygiene.js";
+import {
+  authFileProviderChecks,
+  authFileProviderStatus,
+  createAuthFileProvider,
+  preflightAuthFileProvider,
+  type AuthFileProviderConfig,
+  type AuthFileProviderOptions,
+} from "./provider-support.js";
 
-const CODEX_PROVIDER_ID = "openai-codex";
-const DEFAULT_AUTH_PATH = "~/.flue/openai-codex.json";
-
-export interface CodexProviderOptions {
-  /** Auth file path; "~/" is expanded. Default: "~/.flue/openai-codex.json". */
-  authPath?: string;
-  /** Paths the auth file must not equal or live inside. Default: [process.cwd()]. */
-  forbiddenPaths?: string[];
-  /** Refresh this long before expiry. Default: 300_000 (5 min). */
-  refreshSkewMs?: number;
-}
+export interface CodexProviderOptions extends AuthFileProviderOptions {}
 
 export type CodexPreflightStatus = Pick<
   CodexAuthStatus,
   "authPath" | "expiresAt" | "accountId"
 >;
 
-/** Build a Pi provider that resolves the external auth file on every model request. */
-export function codexProvider(
-  options: CodexProviderOptions = {},
-): Provider<"openai-codex-responses"> {
-  const storeOptions = toStoreOptions(options);
-  assertSafe(storeOptions);
+const CODEX_PROVIDER_CONFIG: AuthFileProviderConfig<
+  "openai-codex-responses",
+  CodexAuthStatus,
+  CodexPreflightStatus
+> = {
+  providerId: CODEX_PROVIDER_ID,
+  providerName: "OpenAI Codex (subscription auth file)",
+  authName: "Codex subscription auth file",
+  defaultAuthPath: CODEX_DEFAULT_AUTH_PATH,
+  storeProfile: CODEX_STORE_PROFILE,
+  models: openaiCodexProvider().getModels(),
+  api: openAICodexResponsesApi(),
+  resolveApiKey,
+  readAuthStatus,
+  validateAuthPath,
+  envChecks: checkEnvHygiene,
+  safePreflightStatus,
+};
 
-  return createProvider({
-    id: CODEX_PROVIDER_ID,
-    name: "OpenAI Codex (subscription auth file)",
-    auth: {
-      apiKey: {
-        name: "Codex subscription auth file",
-        resolve: async () => {
-          assertSafe(storeOptions);
-          const { apiKey, status } = await resolveApiKey(storeOptions);
-          return { auth: { apiKey }, source: status.authPath };
-        },
-      },
-    },
-    models: openaiCodexProvider().getModels(),
-    api: openAICodexResponsesApi(),
-  });
+/** Build a Pi provider that resolves the external auth file on every model request. */
+export function codexProvider(options: CodexProviderOptions = {}) {
+  return createAuthFileProvider(CODEX_PROVIDER_CONFIG, options);
 }
 
 /** Resolve once so a host can fail startup closed without exposing token material. */
-export async function preflight(
+export function codexPreflight(
   options: CodexProviderOptions = {},
 ): Promise<CodexPreflightStatus> {
-  const storeOptions = toStoreOptions(options);
-  assertSafe(storeOptions);
-  const { status } = await resolveApiKey(storeOptions);
-  return safePreflightStatus(status);
+  return preflightAuthFileProvider(CODEX_PROVIDER_CONFIG, options);
 }
 
-/** @internal Non-throwing snapshot used by the doctor command. */
+/** Compatibility alias for the original Codex-only public API. */
+export const preflight = codexPreflight;
+
+/** Non-throwing snapshot used by doctor commands and host health checks. */
 export function codexAuthStatus(options: CodexProviderOptions = {}): CodexAuthStatus {
-  return readAuthStatus(toStoreOptions(options));
+  return authFileProviderStatus(CODEX_PROVIDER_CONFIG, options);
 }
 
-/** @internal Safety checks used by the provider and doctor command. */
+/** Safety checks used by the provider and doctor command. */
 export function codexProviderChecks(
   options: CodexProviderOptions = {},
   env: Record<string, string | undefined> = process.env,
-): AuthCheck[] {
-  return safetyChecks(toStoreOptions(options), env);
-}
-
-function safetyChecks(
-  storeOptions: CodexCredentialStoreOptions,
-  env: Record<string, string | undefined>,
-): AuthCheck[] {
-  return [...validateAuthPath(storeOptions), ...checkEnvHygiene(env)];
-}
-
-function assertSafe(storeOptions: CodexCredentialStoreOptions): void {
-  assertSafeChecks(safetyChecks(storeOptions, process.env));
-}
-
-function toStoreOptions(options: CodexProviderOptions): CodexCredentialStoreOptions {
-  const storeOptions: CodexCredentialStoreOptions = {
-    authPath: expandHome(options.authPath ?? DEFAULT_AUTH_PATH),
-  };
-  if (options.forbiddenPaths !== undefined) {
-    storeOptions.forbiddenPaths = options.forbiddenPaths;
-  }
-  if (options.refreshSkewMs !== undefined) {
-    storeOptions.refreshSkewMs = options.refreshSkewMs;
-  }
-  return storeOptions;
+) {
+  return authFileProviderChecks(CODEX_PROVIDER_CONFIG, options, env);
 }
 
 function safePreflightStatus(status: CodexAuthStatus): CodexPreflightStatus {

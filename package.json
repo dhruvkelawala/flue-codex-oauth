@@ -1,7 +1,7 @@
 {
   "name": "flue-codex-oauth",
   "version": "1.0.0",
-  "description": "Codex subscription OAuth for Flue 2 agents with file-based credentials and request-time token refresh.",
+  "description": "Codex and Claude subscription OAuth for Flue 2 agents with file-based credentials and request-time token refresh.",
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@10.17.1",
@@ -12,6 +12,8 @@
   "keywords": [
     "flue",
     "codex",
+    "claude",
+    "anthropic",
     "oauth",
     "openai",
     "agent"
@@ -21,7 +23,8 @@
   },
   "types": "./dist/index.d.ts",
   "bin": {
-    "flue-codex-login": "dist/bin/login.js"
+    "flue-codex-login": "dist/bin/login.js",
+    "flue-claude-login": "dist/bin/claude-login.js"
   },
   "files": [
     "dist"

@@ -110,13 +110,20 @@ jobs:
           tar -tf "$tarball" | sort | tee artifacts/package-contents.txt
           grep -qx "package/dist/index.js" artifacts/package-contents.txt
           grep -qx "package/dist/bin/login.js" artifacts/package-contents.txt
+          grep -qx "package/dist/bin/claude-login.js" artifacts/package-contents.txt
           tar -xOf "$tarball" package/package.json | node --input-type=module -e '
             import { readFileSync } from "node:fs";
 
             const packageJson = JSON.parse(readFileSync(0, "utf8"));
-            if (packageJson.bin?.["flue-codex-login"] !== "dist/bin/login.js") {
-              console.error("Packed package is missing the flue-codex-login bin mapping.");
-              process.exit(1);
+            const expectedBins = {
+              "flue-codex-login": "dist/bin/login.js",
+              "flue-claude-login": "dist/bin/claude-login.js",
+            };
+            for (const [name, path] of Object.entries(expectedBins)) {
+              if (packageJson.bin?.[name] !== path) {
+                console.error(`Packed package is missing the ${name} bin mapping.`);
+                process.exit(1);
+              }
             }
           '
 
